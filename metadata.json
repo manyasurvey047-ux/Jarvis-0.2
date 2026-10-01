@@ -1,0 +1,8 @@
+{
+  "name": "M.J",
+  "description": "A futuristic cyberpunk AI voice assistant with real-time audio visualizer and interactive voice core.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
