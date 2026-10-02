@@ -40,6 +40,18 @@ class MainActivity : ComponentActivity() {
         
         Log.i("ZoyaDiagnostic", "MainActivity onCreate started")
         
+        try {
+            val cacheDir = java.io.File(cacheDir, "WebView/Default/HTTP Cache/Code Cache/js")
+            if (!cacheDir.exists()) {
+                cacheDir.mkdirs()
+            }
+            cacheDir.setReadable(true, false)
+            cacheDir.setWritable(true, false)
+            cacheDir.setExecutable(true, false)
+        } catch (e: Exception) {
+            Log.w("ZoyaDiagnostic", "Failed to pre-create WebView cache dir", e)
+        }
+
         checkPermissions()
         startDiagnosticLogging()
         com.example.chat.ChatRepository.init(this)
@@ -53,7 +65,7 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    ZoyaScreen()
+                    com.example.ui.JarvisHudScreen()
                 }
             }
         }

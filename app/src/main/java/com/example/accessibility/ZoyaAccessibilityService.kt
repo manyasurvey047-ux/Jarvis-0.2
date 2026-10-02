@@ -1,9 +1,15 @@
 package com.example.accessibility
 
 import android.accessibilityservice.AccessibilityService
+import android.graphics.Bitmap
+import android.graphics.Rect
+import android.os.Build
+import android.os.Bundle
 import android.util.Log
+import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.example.vision.UiElementInfo
 
 class ZoyaAccessibilityService : AccessibilityService() {
 
@@ -64,6 +70,154 @@ class ZoyaAccessibilityService : AccessibilityService() {
             val gesture = builder.build()
 
             return inst.dispatchGesture(gesture, null, null)
+        }
+
+        fun takeScreenshotAsync(callback: (Bitmap?) -> Unit) {
+            val inst = instance
+            if (inst == null) {
+                Log.w(TAG, "takeScreenshotAsync: Accessibility instance is null")
+                callback(null)
+                return
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                try {
+                    inst.takeScreenshot(Display.DEFAULT_DISPLAY, inst.mainExecutor, object : TakeScreenshotCallback {
+                        override fun onSuccess(screenshotResult: ScreenshotResult) {
+                            try {
+                                val buffer = screenshotResult.hardwareBuffer
+                                val colorSpace = screenshotResult.colorSpace
+                                val hwBitmap = Bitmap.wrapHardwareBuffer(buffer, colorSpace)
+                                val softwareBitmap = hwBitmap?.copy(Bitmap.Config.ARGB_8888, false)
+                                buffer.close()
+                                callback(softwareBitmap)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Failed wrapping screenshot hardware buffer", e)
+                                callback(null)
+                            }
+                        }
+
+                        override fun onFailure(errorCode: Int) {
+                            Log.e(TAG, "takeScreenshot onFailure: code $errorCode")
+                            callback(null)
+                        }
+                    })
+                } catch (e: Exception) {
+                    Log.e(TAG, "takeScreenshot exception", e)
+                    callback(null)
+                }
+            } else {
+                callback(null)
+            }
+        }
+
+        fun extractDetailedUiTree(): List<UiElementInfo> {
+            val inst = instance ?: return emptyList()
+            val root = inst.rootInActiveWindow ?: return emptyList()
+            val elements = mutableListOf<UiElementInfo>()
+            var nextId = 1
+
+            fun traverse(node: AccessibilityNodeInfo?) {
+                if (node == null) return
+
+                val bounds = Rect()
+                node.getBoundsInScreen(bounds)
+                val text = node.text?.toString()?.trim() ?: ""
+                val desc = node.contentDescription?.toString()?.trim() ?: ""
+                val className = node.className?.toString() ?: ""
+                val viewId = node.viewIdResourceName ?: ""
+
+                val isClickable = node.isClickable
+                val isCheckable = node.isCheckable
+                val isChecked = node.isChecked
+                val isEditable = node.isEditable
+                val isScrollable = node.isScrollable
+
+                val hasContent = text.isNotEmpty() || desc.isNotEmpty()
+                val isInteractive = isClickable || isCheckable || isEditable || isScrollable
+
+                if (bounds.width() > 12 && bounds.height() > 12 && (hasContent || isInteractive)) {
+                    elements.add(
+                        UiElementInfo(
+                            id = nextId++,
+                            text = text,
+                            contentDescription = desc,
+                            className = className,
+                            viewId = viewId,
+                            bounds = bounds,
+                            isClickable = isClickable,
+                            isCheckable = isCheckable,
+                            isChecked = isChecked,
+                            isEditable = isEditable,
+                            isScrollable = isScrollable
+                        )
+                    )
+                }
+
+                for (i in 0 until node.childCount) {
+                    traverse(node.getChild(i))
+                }
+            }
+
+            traverse(root)
+            return elements
+        }
+
+        fun setTextOnInput(targetX: Float?, targetY: Float?, text: String): Boolean {
+            val inst = instance ?: return false
+            val root = inst.rootInActiveWindow ?: return false
+
+            if (targetX != null && targetY != null) {
+                dispatchGestureClick(targetX, targetY)
+                try { Thread.sleep(300) } catch (_: Exception) {}
+            }
+
+            val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            val targetNode = focused ?: findFirstEditableNode(root)
+
+            if (targetNode != null) {
+                val args = Bundle().apply {
+                    putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+                }
+                val setSuccess = targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+                if (setSuccess) return true
+            }
+
+            if (targetX != null && targetY != null) {
+                val nodeAtPoint = findNodeAtPoint(root, targetX.toInt(), targetY.toInt())
+                if (nodeAtPoint != null && nodeAtPoint.isEditable) {
+                    val args = Bundle().apply {
+                        putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+                    }
+                    return nodeAtPoint.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+                }
+            }
+
+            return false
+        }
+
+        private fun findFirstEditableNode(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+            if (node == null) return null
+            if (node.isEditable) return node
+            for (i in 0 until node.childCount) {
+                val child = node.getChild(i)
+                val found = findFirstEditableNode(child)
+                if (found != null) return found
+            }
+            return null
+        }
+
+        private fun findNodeAtPoint(node: AccessibilityNodeInfo?, x: Int, y: Int): AccessibilityNodeInfo? {
+            if (node == null) return null
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            if (rect.contains(x, y)) {
+                for (i in 0 until node.childCount) {
+                    val child = findNodeAtPoint(node.getChild(i), x, y)
+                    if (child != null) return child
+                }
+                return node
+            }
+            return null
         }
 
         fun clickTextOnScreen(text: String): Boolean {

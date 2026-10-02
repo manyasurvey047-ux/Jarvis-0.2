@@ -100,6 +100,27 @@ class AssistantEngine(
     private suspend fun handleDirectCommands(text: String): String? {
         val lower = text.lowercase()
 
+        // Screen Vision / Screen Share Controls
+        if (lower.contains("screen share on") || lower.contains("enable screen vision") || lower.contains("screen vision on") ||
+            lower.contains("start screen share") || lower.contains("screen dekho") || lower.contains("screen share chalu")) {
+            com.example.vision.ScreenVisionEngine.instance?.setVisionActive(true)
+            return "Screen Vision enabled. Main screen analyze kar raha hoon. Aap aadesh dijiye, sir."
+        }
+        if (lower.contains("screen share off") || lower.contains("disable screen vision") || lower.contains("screen vision off") ||
+            lower.contains("stop screen share") || lower.contains("screen share band")) {
+            com.example.vision.ScreenVisionEngine.instance?.setVisionActive(false)
+            return "Screen Vision disabled kar di gayi hai."
+        }
+
+        // Autonomous Visual Task Trigger (e.g. Developer options, Chrome search, wireless debugging, click on screen)
+        if (lower.contains("developer option") || lower.contains("wireless debugging") ||
+            (lower.contains("open") && lower.contains("search") && lower.contains("result")) ||
+            (lower.contains("screen") && (lower.contains("click") || lower.contains("tap") || lower.contains("dhundo") || lower.contains("find"))) ||
+            (com.example.vision.ScreenVisionEngine.instance?.isVisionActive?.value == true && (lower.contains("click") || lower.contains("tap") || lower.contains("scroll") || lower.contains("turn on") || lower.contains("enable")))) {
+            com.example.vision.ScreenVisionEngine.instance?.executeAutonomousTask(text)
+            return "Visual AI task start ho gaya hai. Main screen examine karke task execute kar raha hoon..."
+        }
+
         // YouTube
         if (lower.contains("yt open") || lower.contains("open yt") || lower.contains("open youtube") || 
             lower.contains("youtube open") || lower.contains("youtube chalao") || lower.contains("youtube kholo") ||
