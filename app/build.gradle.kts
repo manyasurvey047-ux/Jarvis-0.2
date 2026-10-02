@@ -19,6 +19,8 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    val envKey = System.getenv("GEMINI_API_KEY") ?: ""
+    buildConfigField("String", "ENV_GEMINI_KEY", "\"$envKey\"")
   }
 
   signingConfigs {

@@ -37,6 +37,7 @@ class ZoyaForegroundService : Service() {
 
     lateinit var liveSessionManager: LiveSessionManager
     private lateinit var toolEngine: ToolExecutionEngine
+    lateinit var assistantEngine: com.example.assistant.AssistantEngine
 
     private var isRecording = false
 
@@ -72,6 +73,7 @@ class ZoyaForegroundService : Service() {
         try {
             activeService = this
             toolEngine = ToolExecutionEngine(this)
+            assistantEngine = com.example.assistant.AssistantEngine(this, toolEngine)
             
             val onAudioOut: (ByteArray) -> Unit = { audioData ->
                 playAudio(audioData)
@@ -297,6 +299,7 @@ class ZoyaForegroundService : Service() {
 
     fun sendTextMessage(text: String) {
         liveSessionManager.sendTextMessage(text)
+        assistantEngine.processQuery(text, isVoice = false)
     }
 
     fun reconnectSession() {

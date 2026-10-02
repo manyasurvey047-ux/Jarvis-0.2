@@ -42,6 +42,8 @@ class MainActivity : ComponentActivity() {
         
         checkPermissions()
         startDiagnosticLogging()
+        com.example.chat.ChatRepository.init(this)
+        com.example.voice.VoiceSpeaker.init(this)
         com.example.security.AntiTheftManager.init(this)
         com.example.memory.MemoryStore.init(this)
 

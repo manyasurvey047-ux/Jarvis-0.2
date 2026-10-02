@@ -530,19 +530,22 @@ class LiveSessionManager(
         if (apiKey.isEmpty() && BuildConfig.GEMINI_API_KEY.isNotEmpty() && BuildConfig.GEMINI_API_KEY != "MY_GEMINI_API_KEY") {
             apiKey = BuildConfig.GEMINI_API_KEY
         }
+        if (apiKey.isEmpty() && BuildConfig.ENV_GEMINI_KEY.isNotEmpty() && BuildConfig.ENV_GEMINI_KEY != "MY_GEMINI_API_KEY") {
+            apiKey = BuildConfig.ENV_GEMINI_KEY
+        }
         if (apiKey.isEmpty()) {
             addMessage("Error: API Key is missing. Please set it in Settings.")
             _zoyaState.value = ZoyaState.IDLE
             return
         }
-        if (apiKey.isEmpty() || apiKey == "YOUR_API_KEY") {
-            Log.e("ZoyaDiagnostic", "No API Key found")
+        if (apiKey == "YOUR_API_KEY" || apiKey == "MY_GEMINI_API_KEY") {
+            Log.e("ZoyaDiagnostic", "No valid API Key found")
             addMessage("Error: Gemini API Key is missing. Please add it to the Secrets tab.")
             return
         }
         
         Log.i("ZoyaDiagnostic", "Connecting to Gemini Live API...")
-        val url = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=$apiKey"
+        val url = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=$apiKey"
         val request = Request.Builder().url(url).build()
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
@@ -615,8 +618,9 @@ class LiveSessionManager(
     }
 
     fun sendTextMessage(text: String) {
-        if (webSocket == null || !isSetupComplete || _zoyaState.value == ZoyaState.IDLE) return
         addMessage("You: $text")
+        com.example.chat.ChatRepository.addMessage(sender = "user", content = text)
+        if (webSocket == null || !isSetupComplete || _zoyaState.value == ZoyaState.IDLE) return
         val msg = buildJsonObject {
             putJsonObject("clientContent") {
                 putJsonArray("turns") {
@@ -665,7 +669,7 @@ class LiveSessionManager(
     private fun sendSetupMessage(ws: WebSocket) {
         val setupMsg = buildJsonObject {
             putJsonObject("setup") {
-                put("model", "models/gemini-2.5-flash-native-audio-preview-12-2025")
+                put("model", "models/gemini-2.0-flash-exp")
                 putJsonObject("generationConfig") {
                     putJsonArray("responseModalities") { add("AUDIO") }
                     putJsonObject("speechConfig") {
@@ -726,6 +730,7 @@ class LiveSessionManager(
                         val textContent = part["text"]?.jsonPrimitive?.content
                         if (!textContent.isNullOrBlank()) {
                             addMessage("M.J: $textContent")
+                            com.example.chat.ChatRepository.addMessage(sender = "assistant", content = textContent)
                         }
                     }
                 }
@@ -757,6 +762,7 @@ class LiveSessionManager(
          _zoyaState.value = ZoyaState.THINKING
          scope.launch {
               val resultStr = toolEngine.execute(name, args)
+              com.example.chat.ChatRepository.addMessage(sender = "system", content = "⚡ Task: $name", actionResult = resultStr)
               
               val responseMsg = buildJsonObject {
                   putJsonObject("toolResponse") {

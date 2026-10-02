@@ -100,6 +100,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -157,6 +158,7 @@ fun ZoyaScreen() {
         mutableStateOf(
             if (saved.isNotEmpty()) saved
             else if (BuildConfig.GEMINI_API_KEY.isNotEmpty() && BuildConfig.GEMINI_API_KEY != "MY_GEMINI_API_KEY") BuildConfig.GEMINI_API_KEY
+            else if (BuildConfig.ENV_GEMINI_KEY.isNotEmpty() && BuildConfig.ENV_GEMINI_KEY != "MY_GEMINI_API_KEY") BuildConfig.ENV_GEMINI_KEY
             else ""
         )
     }
@@ -174,20 +176,50 @@ fun ZoyaScreen() {
     var torchState by remember { mutableStateOf(false) }
     var isReadingNotificationsAloud by remember { mutableStateOf(false) }
 
-    val messages by ZoyaForegroundService.messages.collectAsState(initial = emptyList())
+    val chatMessages by com.example.chat.ChatRepository.messages.collectAsState(initial = emptyList())
     val notifications by NotificationStore.notifications.collectAsState(initial = emptyList())
     val isChargerArmed by com.example.security.AntiTheftManager.isChargerShieldArmed.collectAsState()
     val isMotionArmed by com.example.security.AntiTheftManager.isMotionShieldArmed.collectAsState()
     val isAlarmSounding by com.example.security.AntiTheftManager.isAlarmSounding.collectAsState()
     val memories by com.example.memory.MemoryStore.memories.collectAsState()
     val toolEngine = remember { ToolExecutionEngine(context) }
+    val assistantEngine = remember { com.example.assistant.AssistantEngine(context, toolEngine) }
 
     // Initialize TTS and Notification Listener check
     LaunchedEffect(Unit) {
         NotificationStore.initTts(context)
+        com.example.voice.VoiceSpeaker.init(context)
         ZoyaForegroundService.onStateChange = { newState ->
             zoyaState = newState
             serviceStarted = (ZoyaForegroundService.activeService != null)
+        }
+    }
+
+    fun sendUserQuery(text: String, isVoice: Boolean = false) {
+        if (text.isBlank()) return
+        val query = text.trim()
+        val activeService = ZoyaForegroundService.activeService
+        if (activeService != null) {
+            activeService.sendTextMessage(query)
+        } else {
+            assistantEngine.processQuery(query, isVoice = isVoice)
+        }
+        inputText = ""
+        keyboardController?.hide()
+    }
+
+    val voiceInputManager = remember {
+        com.example.voice.VoiceInputManager(context) { recognizedText ->
+            sendUserQuery(recognizedText, isVoice = true)
+        }
+    }
+    val isVoiceListening by voiceInputManager.isListening.collectAsState()
+    val partialVoiceText by voiceInputManager.partialText.collectAsState()
+
+    DisposableEffect(Unit) {
+        voiceInputManager.init()
+        onDispose {
+            voiceInputManager.destroy()
         }
     }
 
@@ -196,34 +228,37 @@ fun ZoyaScreen() {
     ) { permissions ->
         val hasMic = permissions[Manifest.permission.RECORD_AUDIO] == true
         if (hasMic) {
+            voiceInputManager.startListening()
             val intent = Intent(context, ZoyaForegroundService::class.java)
             ContextCompat.startForegroundService(context, intent)
             serviceStarted = true
-            Toast.makeText(context, "Voice Core Activated", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "M.J Voice Activated - Bolna shuru kijiye...", Toast.LENGTH_SHORT).show()
         } else {
             Toast.makeText(context, "Microphone permission is required", Toast.LENGTH_LONG).show()
         }
     }
 
     fun toggleVoiceAssistant() {
+        if (apiKey.isEmpty() && BuildConfig.ENV_GEMINI_KEY.isNotEmpty()) {
+            apiKey = BuildConfig.ENV_GEMINI_KEY
+        }
         if (serviceStarted) {
             val intent = Intent(context, ZoyaForegroundService::class.java)
             context.stopService(intent)
             serviceStarted = false
             zoyaState = ZoyaState.IDLE
+            voiceInputManager.stopListening()
         } else {
-            if (apiKey.isEmpty()) {
-                showSettingsDialog = true
-                return
-            }
             val hasMic = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
             val hasContacts = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
             val hasPhone = ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED
 
-            if (hasMic && hasContacts && hasPhone) {
+            if (hasMic) {
+                voiceInputManager.startListening()
                 val intent = Intent(context, ZoyaForegroundService::class.java)
                 ContextCompat.startForegroundService(context, intent)
                 serviceStarted = true
+                Toast.makeText(context, "M.J Voice Activated", Toast.LENGTH_SHORT).show()
             } else {
                 val permissionsList = mutableListOf(
                     Manifest.permission.RECORD_AUDIO,
@@ -236,22 +271,6 @@ fun ZoyaScreen() {
                 permissionLauncher.launch(permissionsList.toTypedArray())
             }
         }
-    }
-
-    fun sendUserQuery(text: String) {
-        if (text.isBlank()) return
-        val activeService = ZoyaForegroundService.activeService
-        if (activeService != null) {
-            activeService.sendTextMessage(text.trim())
-        } else {
-            toggleVoiceAssistant()
-            scope.launch {
-                delay(1000)
-                ZoyaForegroundService.activeService?.sendTextMessage(text.trim())
-            }
-        }
-        inputText = ""
-        keyboardController?.hide()
     }
 
     fun readNotificationItem(notif: AppNotification) {
@@ -421,12 +440,22 @@ fun ZoyaScreen() {
                     // TAB 1: LIVE CHAT & CONVERSATION TRANSCRIPT
                     // -------------------------------------------------------------
                     ChatTranscriptTab(
-                        messages = messages,
+                        messages = chatMessages,
+                        partialVoiceText = partialVoiceText,
+                        isVoiceListening = isVoiceListening,
                         inputText = inputText,
                         onInputChange = { inputText = it },
                         onSend = { sendUserQuery(inputText) },
+                        onMicClick = {
+                            if (isVoiceListening) voiceInputManager.stopListening()
+                            else voiceInputManager.startListening()
+                        },
                         onClear = {
+                            com.example.chat.ChatRepository.clearAll()
                             ZoyaForegroundService.clearMessages()
+                        },
+                        onSuggestionClick = { prompt ->
+                            sendUserQuery(prompt)
                         }
                     )
                 }
@@ -1743,15 +1772,19 @@ fun BottomNavItem(
 // -------------------------------------------------------------
 @Composable
 fun ChatTranscriptTab(
-    messages: List<String>,
+    messages: List<com.example.chat.ChatMessage>,
+    partialVoiceText: String = "",
+    isVoiceListening: Boolean = false,
     inputText: String,
     onInputChange: (String) -> Unit,
     onSend: () -> Unit,
-    onClear: () -> Unit
+    onMicClick: () -> Unit,
+    onClear: () -> Unit,
+    onSuggestionClick: (String) -> Unit
 ) {
     val listState = rememberLazyListState()
 
-    LaunchedEffect(messages.size) {
+    LaunchedEffect(messages.size, partialVoiceText) {
         if (messages.isNotEmpty()) {
             listState.animateScrollToItem(messages.size - 1)
         }
@@ -1779,8 +1812,8 @@ fun ChatTranscriptTab(
                     fontStyle = FontStyle.Italic
                 )
                 Text(
-                    text = "Real-time dialogue & actions",
-                    color = Color(0xFF94A3B8),
+                    text = if (isVoiceListening) "🎙️ Listening to your voice..." else "Real-time dialogue & actions (Saved)",
+                    color = if (isVoiceListening) CrimsonPrimary else Color(0xFF94A3B8),
                     fontSize = 13.sp,
                     fontFamily = FontFamily.Serif
                 )
@@ -1812,63 +1845,225 @@ fun ChatTranscriptTab(
                 .padding(12.dp)
         ) {
             if (messages.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
                 ) {
+                    Box(
+                        modifier = Modifier
+                            .size(54.dp)
+                            .clip(CircleShape)
+                            .background(CrimsonPrimary.copy(alpha = 0.15f))
+                            .border(1.dp, CrimsonPrimary.copy(alpha = 0.4f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.GraphicEq,
+                            contentDescription = "M.J Core",
+                            tint = CrimsonPrimary,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
                     Text(
-                        text = "No dialogue yet.\nSpeak into the core or type a message below.",
-                        color = Color(0xFF64748B),
-                        fontSize = 14.sp,
-                        textAlign = TextAlign.Center,
-                        fontFamily = FontFamily.Serif,
-                        fontStyle = FontStyle.Italic
+                        text = "M.J Voice Assistant Ready",
+                        color = Color.White,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Serif
                     )
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    Text(
+                        text = "Boliye ya type kijiye! Sabhi tasks aur chats hamesha saved rahenge.",
+                        color = Color(0xFF94A3B8),
+                        fontSize = 13.sp,
+                        textAlign = TextAlign.Center,
+                        fontFamily = FontFamily.Serif
+                    )
+
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    Text(
+                        text = "Suggestions:",
+                        color = CrimsonPrimary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Suggestion Chips
+                    val suggestions = listOf(
+                        "▶️ YouTube open kro",
+                        "📸 Camera open kro",
+                        "💡 Torch on kro",
+                        "💬 WhatsApp open kro",
+                        "👋 Hii M.J",
+                        "🔊 Volume badhao"
+                    )
+
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        suggestions.chunked(2).forEach { rowChips ->
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                rowChips.forEach { chip ->
+                                    Surface(
+                                        onClick = { onSuggestionClick(chip.substring(3).trim()) },
+                                        shape = RoundedCornerShape(12.dp),
+                                        color = Color(0xFF161826),
+                                        border = BorderStroke(1.dp, Color(0x33FF2442)),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text(
+                                            text = chip,
+                                            color = Color.White,
+                                            fontSize = 12.sp,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                            textAlign = TextAlign.Center,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             } else {
-                val cleanMessages = messages.filter { msg ->
-                    !msg.startsWith("Server says: [") && !msg.startsWith("Server says: setupComplete") && !msg.startsWith("Server says: Setup") && !msg.startsWith("WebSocket")
-                }
-
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(cleanMessages) { msg ->
-                        val isUser = msg.startsWith("You:")
+                    items(messages) { msg ->
+                        val isUser = msg.sender == "user"
+                        val isSystem = msg.sender == "system"
 
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
-                        ) {
+                        if (isSystem) {
+                            // System Task Execution Card
                             Box(
                                 modifier = Modifier
-                                    .clip(
-                                        RoundedCornerShape(
-                                            topStart = 16.dp,
-                                            topEnd = 16.dp,
-                                            bottomStart = if (isUser) 16.dp else 4.dp,
-                                            bottomEnd = if (isUser) 4.dp else 16.dp
-                                        )
-                                    )
-                                    .background(
-                                        if (isUser) CrimsonPrimary.copy(alpha = 0.25f)
-                                        else Color(0xFF1A1B2A)
-                                    )
-                                    .border(
-                                        1.dp,
-                                        if (isUser) CrimsonPrimary.copy(alpha = 0.5f) else Color(0x33475569),
-                                        RoundedCornerShape(16.dp)
-                                    )
-                                    .padding(horizontal = 14.dp, vertical = 10.dp)
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp),
+                                contentAlignment = Alignment.Center
                             ) {
-                                Text(
-                                    text = msg,
-                                    color = Color.White,
-                                    fontSize = 14.sp,
-                                    lineHeight = 20.sp
-                                )
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = Color(0xFF131520),
+                                    border = BorderStroke(1.dp, Color(0x3310B981))
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                    ) {
+                                        Text(
+                                            text = msg.content,
+                                            color = Color(0xFF34D399),
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                        if (!msg.actionResult.isNullOrEmpty()) {
+                                            Text(
+                                                text = " • ${msg.actionResult}",
+                                                color = Color(0xFF94A3B8),
+                                                fontSize = 11.sp
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(
+                                            RoundedCornerShape(
+                                                topStart = 16.dp,
+                                                topEnd = 16.dp,
+                                                bottomStart = if (isUser) 16.dp else 4.dp,
+                                                bottomEnd = if (isUser) 4.dp else 16.dp
+                                            )
+                                        )
+                                        .background(
+                                            if (isUser) CrimsonPrimary.copy(alpha = 0.28f)
+                                            else Color(0xFF17192A)
+                                        )
+                                        .border(
+                                            1.dp,
+                                            if (isUser) CrimsonPrimary.copy(alpha = 0.6f) else Color(0x33475569),
+                                            RoundedCornerShape(16.dp)
+                                        )
+                                        .padding(horizontal = 14.dp, vertical = 10.dp)
+                                ) {
+                                    Column {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                text = if (isUser) "You" else "M.J",
+                                                color = if (isUser) CrimsonPrimary else Color(0xFFA855F7),
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            if (msg.isVoice) {
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Icon(
+                                                    imageVector = Icons.Rounded.Mic,
+                                                    contentDescription = "Voice",
+                                                    tint = CrimsonPrimary,
+                                                    modifier = Modifier.size(12.dp)
+                                                )
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Text(
+                                            text = msg.content,
+                                            color = Color.White,
+                                            fontSize = 14.sp,
+                                            lineHeight = 20.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Live Partial Voice Transcription Indicator
+                    if (isVoiceListening || partialVoiceText.isNotEmpty()) {
+                        item {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = Color(0xFF22111E),
+                                border = BorderStroke(1.dp, CrimsonPrimary.copy(alpha = 0.4f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.GraphicEq,
+                                        contentDescription = "Listening",
+                                        tint = CrimsonPrimary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = if (partialVoiceText.isNotEmpty()) partialVoiceText else "Listening to your voice...",
+                                        color = Color.White,
+                                        fontSize = 13.sp,
+                                        fontStyle = FontStyle.Italic
+                                    )
+                                }
                             }
                         }
                     }
@@ -1878,12 +2073,81 @@ fun ChatTranscriptTab(
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // Text prompt bar in chat
-        AskPromptBar(
-            inputText = inputText,
-            onInputChange = onInputChange,
-            onSend = onSend
-        )
+        // Text prompt bar with interactive Mic and Send buttons
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = Color(0xFF0F101A),
+            border = BorderStroke(1.dp, Color(0x33FF2442)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(54.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = inputText,
+                    onValueChange = onInputChange,
+                    placeholder = {
+                        Text(
+                            text = if (isVoiceListening) "Listening..." else "Ask M.J anything or tap mic...",
+                            color = Color(0xFF6B7280),
+                            fontSize = 14.sp,
+                            fontFamily = FontFamily.Serif,
+                            fontStyle = FontStyle.Italic
+                        )
+                    },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Color.Transparent,
+                        unfocusedBorderColor = Color.Transparent,
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        cursorColor = CrimsonPrimary
+                    ),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = { onSend() }),
+                    modifier = Modifier.weight(1f)
+                )
+
+                // Voice Mic Button
+                IconButton(
+                    onClick = onMicClick,
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(if (isVoiceListening) CrimsonPrimary else Color(0xFF1E2030))
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Mic,
+                        contentDescription = "Voice Input",
+                        tint = if (isVoiceListening) Color.White else CrimsonPrimary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(6.dp))
+
+                // Send Button
+                IconButton(
+                    onClick = onSend,
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(CrimsonPrimary)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Send,
+                        contentDescription = "Send",
+                        tint = Color.White,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
     }
 }
 
